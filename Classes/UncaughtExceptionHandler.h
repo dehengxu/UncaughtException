@@ -19,6 +19,11 @@
 	BOOL dismissed;
 }
 
++ (id)sharedInstance;
+- (void)handleException:(NSException *)exception;
+
 @end
 
+void HandleException(NSException *exception);
 void InstallUncaughtExceptionHandler();
+void SignalHandler(int signal);

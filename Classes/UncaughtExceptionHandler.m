@@ -26,27 +26,39 @@ const int32_t UncaughtExceptionMaximum = 10;
 const NSInteger UncaughtExceptionHandlerSkipAddressCount = 4;
 const NSInteger UncaughtExceptionHandlerReportAddressCount = 5;
 
+static id __sharedInstance__ = nil;
+
+#define SHARED_INSTANCE_ENABLED 0
+
 @implementation UncaughtExceptionHandler
 
 + (NSArray *)backtrace
 {
-	 void* callstack[128];
-	 int frames = backtrace(callstack, 128);
-	 char **strs = backtrace_symbols(callstack, frames);
-	 
-	 int i;
-	 NSMutableArray *backtrace = [NSMutableArray arrayWithCapacity:frames];
-	 for (
-	 	i = UncaughtExceptionHandlerSkipAddressCount;
-	 	i < UncaughtExceptionHandlerSkipAddressCount +
-			UncaughtExceptionHandlerReportAddressCount;
-		i++)
-	 {
+    void* callstack[128];
+    int frames = backtrace(callstack, 128);
+    char **strs = backtrace_symbols(callstack, frames);
+    
+    int i;
+    NSMutableArray *backtrace = [NSMutableArray arrayWithCapacity:frames];
+    for (
+         i = UncaughtExceptionHandlerSkipAddressCount;
+         i < UncaughtExceptionHandlerSkipAddressCount +
+         UncaughtExceptionHandlerReportAddressCount;
+         i++)
+    {
 	 	[backtrace addObject:[NSString stringWithUTF8String:strs[i]]];
-	 }
-	 free(strs);
-	 
-	 return backtrace;
+    }
+    free(strs);
+    
+    return backtrace;
+}
+
++ (id)sharedInstance
+{
+    if (!__sharedInstance__) {
+        __sharedInstance__ = [[self alloc] init];
+    }
+    return __sharedInstance__;
 }
 
 - (void)alertView:(UIAlertView *)anAlertView clickedButtonAtIndex:(NSInteger)anIndex
@@ -67,17 +79,17 @@ const NSInteger UncaughtExceptionHandlerReportAddressCount = 5;
 	[self validateAndSaveCriticalApplicationData];
 	
 	UIAlertView *alert =
-		[[[UIAlertView alloc]
-			initWithTitle:NSLocalizedString(@"Unhandled exception", nil)
-			message:[NSString stringWithFormat:NSLocalizedString(
-				@"You can try to continue but the application may be unstable.\n\n"
-				@"Debug details follow:\n%@\n%@", nil),
-				[exception reason],
-				[[exception userInfo] objectForKey:UncaughtExceptionHandlerAddressesKey]]
-			delegate:self
-			cancelButtonTitle:NSLocalizedString(@"Quit", nil)
-			otherButtonTitles:NSLocalizedString(@"Continue", nil), nil]
-		autorelease];
+    [[[UIAlertView alloc]
+      initWithTitle:NSLocalizedString(@"Unhandled exception", nil)
+      message:[NSString stringWithFormat:NSLocalizedString(
+                                                           @"You can try to continue but the application may be unstable.\n\n"
+                                                           @"Debug details follow:\n%@\n%@", nil),
+               [exception reason],
+               [[exception userInfo] objectForKey:UncaughtExceptionHandlerAddressesKey]]
+      delegate:self
+      cancelButtonTitle:NSLocalizedString(@"Quit", nil)
+      otherButtonTitles:NSLocalizedString(@"Continue", nil), nil]
+     autorelease];
 	[alert show];
 	
 	CFRunLoopRef runLoop = CFRunLoopGetCurrent();
@@ -87,12 +99,20 @@ const NSInteger UncaughtExceptionHandlerReportAddressCount = 5;
 	{
 		for (NSString *mode in (NSArray *)allModes)
 		{
-			CFRunLoopRunInMode((CFStringRef)mode, 0.001, false);
+            @try {
+                CFRunLoopRunInMode((CFStringRef)mode, 0.001, false);
+            }
+            @catch (NSException *exception) {
+                NSLog(@"exce :%@", exception);
+            }
+            @finally {
+                NSLog(@"%s", __func__);
+            }
 		}
 	}
 	
 	CFRelease(allModes);
-
+    
 	NSSetUncaughtExceptionHandler(NULL);
 	signal(SIGABRT, SIG_DFL);
 	signal(SIGILL, SIG_DFL);
@@ -123,23 +143,35 @@ void HandleException(NSException *exception)
 	
 	NSArray *callStack = [UncaughtExceptionHandler backtrace];
 	NSMutableDictionary *userInfo =
-		[NSMutableDictionary dictionaryWithDictionary:[exception userInfo]];
+    [NSMutableDictionary dictionaryWithDictionary:[exception userInfo]];
 	[userInfo
-		setObject:callStack
-		forKey:UncaughtExceptionHandlerAddressesKey];
+     setObject:callStack
+     forKey:UncaughtExceptionHandlerAddressesKey];
 	
+#if SHARED_INSTANCE_ENABLED
+	[[UncaughtExceptionHandler sharedInstance]
+     performSelectorOnMainThread:@selector(handleException:)
+     withObject:
+     [NSException
+      exceptionWithName:[exception name]
+      reason:[exception reason]
+      userInfo:userInfo]
+     waitUntilDone:YES];
+#else
 	[[[[UncaughtExceptionHandler alloc] init] autorelease]
-		performSelectorOnMainThread:@selector(handleException:)
-		withObject:
-			[NSException
-				exceptionWithName:[exception name]
-				reason:[exception reason]
-				userInfo:userInfo]
-		waitUntilDone:YES];
+     performSelectorOnMainThread:@selector(handleException:)
+     withObject:
+     [NSException
+      exceptionWithName:[exception name]
+      reason:[exception reason]
+      userInfo:userInfo]
+     waitUntilDone:YES];
+#endif
 }
 
 void SignalHandler(int signal)
 {
+    NSLog(@"%s  %d", __func__, signal);
 	int32_t exceptionCount = OSAtomicIncrement32(&UncaughtExceptionCount);
 	if (exceptionCount > UncaughtExceptionMaximum)
 	{
@@ -147,29 +179,45 @@ void SignalHandler(int signal)
 	}
 	
 	NSMutableDictionary *userInfo =
-		[NSMutableDictionary
-			dictionaryWithObject:[NSNumber numberWithInt:signal]
-			forKey:UncaughtExceptionHandlerSignalKey];
-
+    [NSMutableDictionary
+     dictionaryWithObject:[NSNumber numberWithInt:signal]
+     forKey:UncaughtExceptionHandlerSignalKey];
+    
 	NSArray *callStack = [UncaughtExceptionHandler backtrace];
 	[userInfo
-		setObject:callStack
-		forKey:UncaughtExceptionHandlerAddressesKey];
-	
+     setObject:callStack
+     forKey:UncaughtExceptionHandlerAddressesKey];
+#if SHARED_INSTANCE_ENABLED
+	[[UncaughtExceptionHandler sharedInstance]
+     performSelectorOnMainThread:@selector(handleException:)
+     withObject:
+     [NSException
+      exceptionWithName:UncaughtExceptionHandlerSignalExceptionName
+      reason:
+      [NSString stringWithFormat:
+       NSLocalizedString(@"Signal %d was raised.", nil),
+       signal]
+      userInfo:
+      [NSDictionary
+       dictionaryWithObject:[NSNumber numberWithInt:signal]
+       forKey:UncaughtExceptionHandlerSignalKey]]
+     waitUntilDone:YES];
+#else
 	[[[[UncaughtExceptionHandler alloc] init] autorelease]
-		performSelectorOnMainThread:@selector(handleException:)
-		withObject:
-			[NSException
-				exceptionWithName:UncaughtExceptionHandlerSignalExceptionName
-				reason:
-					[NSString stringWithFormat:
-						NSLocalizedString(@"Signal %d was raised.", nil),
-						signal]
-				userInfo:
-					[NSDictionary
-						dictionaryWithObject:[NSNumber numberWithInt:signal]
-						forKey:UncaughtExceptionHandlerSignalKey]]
-		waitUntilDone:YES];
+     performSelectorOnMainThread:@selector(handleException:)
+     withObject:
+     [NSException
+      exceptionWithName:UncaughtExceptionHandlerSignalExceptionName
+      reason:
+      [NSString stringWithFormat:
+       NSLocalizedString(@"Signal %d was raised.", nil),
+       signal]
+      userInfo:
+      [NSDictionary
+       dictionaryWithObject:[NSNumber numberWithInt:signal]
+       forKey:UncaughtExceptionHandlerSignalKey]]
+     waitUntilDone:YES];
+#endif
 }
 
 void InstallUncaughtExceptionHandler()
